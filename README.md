@@ -135,6 +135,10 @@ UsageBar.app/Contents/MacOS/UsageBar --probe
 
 Built against the documented [Codex app-server protocol](https://learn.chatgpt.com/docs/app-server), using `account/rateLimits/read`.
 
+## License
+
+[MIT](LICENSE) — free to use, modify, and distribute, including commercially. Keep the copyright and license notice with copies or substantial portions of the software.
+
 ---
 
 An independent project by [shoobah](https://github.com/shoobah). Not affiliated with or endorsed by OpenAI.
