@@ -6,6 +6,10 @@ UsageBar is a small, native macOS app that shows your remaining Codex allowance,
 
 **[Download for Mac — Apple Silicon](https://github.com/shoobah/UsageBar/releases/download/v1.0.0/UsageBar-1.0.0-AppleSilicon.dmg)** · [Latest release](https://github.com/shoobah/UsageBar/releases/latest) · [Report an issue](https://github.com/shoobah/UsageBar/issues)
 
+<p align="center">
+  <img src="docs/images/usagebar.png" alt="UsageBar in the macOS menu bar, showing 84% remaining and an on-track weekly usage forecast." width="453">
+</p>
+
 ## Your allowance, at a glance
 
 - **Always visible.** See the percentage of your weekly allowance remaining right in the menu bar.
