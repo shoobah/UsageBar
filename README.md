@@ -14,7 +14,7 @@ UsageBar is a small, native macOS app that shows your remaining Codex allowance,
 
 - **Always visible.** See the percentage of your weekly allowance remaining right in the menu bar.
 - **Live updates.** Refreshes every minute, after your Mac wakes, or whenever you click Refresh.
-- **A useful forecast.** See projected usage at reset and how much of your weekly allowance you can spend per day.
+- **A useful forecast.** See projected usage at reset and how much of your weekly allowance you can spend per day. When your pace is too high, see the estimated date and local time you would run out.
 - **Warnings you can spot.** The menu bar icon turns amber when your projected usage approaches the limit and red when your pace is too high.
 - **Optional notifications.** Get a macOS notification when you risk running out, with a six-hour cooldown to avoid repeated alerts.
 - **Made for the Mac.** Native SwiftUI and AppKit, a compact scrolling popover, automatic icon contrast when you're on track, and optional launch at login.
@@ -59,6 +59,8 @@ The popover shows your reset time in your Mac's local time zone. If Codex report
 **Projected use at reset** extends your average consumption since the weekly window began. It appears after the first hour of the window.
 
 **At your recent pace** uses locally observed consumption over a period of 6–24 hours. It appears after at least six hours of observations and a change of at least three percentage points, since usage readings are rounded. The warning uses whichever forecast is higher.
+
+When your pace is too high, the panel and pace notifications show an **estimated run-out time**, using whichever pace would exhaust the allowance first. This assumes that pace continues. The estimate is hidden when readings are stale, the window has expired, or the allowance is already exhausted.
 
 **Available per day** divides your remaining allowance by the time until reset. A value of 14.7% means 14.7 percentage points of the **total weekly allowance** per day.
 

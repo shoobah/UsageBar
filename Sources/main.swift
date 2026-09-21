@@ -26,6 +26,13 @@ final class UsageStore: ObservableObject {
     }
     var expired: Bool { weekly.map { $0.resetsAt <= Date().timeIntervalSince1970 } ?? false }
     var level: Int { stale || expired ? 0 : (weekly?.remaining == 0 ? 2 : forecast?.level ?? 0) }
+    var estimatedRunOut: String? {
+        guard !stale, let window = weekly else { return nil }
+        let now = Date().timeIntervalSince1970
+        let forecast = Forecast.calculate(window, samples: samples, now: now)
+        guard let timestamp = forecast.runOutAt(for: window, now: now) else { return nil }
+        return Date(timeIntervalSince1970: timestamp).formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated).hour().minute())
+    }
     var headline: String {
         if error != nil { return "Refresh unavailable" }
         if limits == nil { return "Connecting to Codex…" }
@@ -79,6 +86,9 @@ final class UsageStore: ObservableObject {
         let content = UNMutableNotificationContent()
         content.title = "Your Codex usage pace is too high"
         content.body = "\(Int(w.remaining))% remaining. At this pace, you may run out before your weekly reset."
+        if let estimate = estimatedRunOut {
+            content.body = "\(Int(w.remaining))% remaining. Estimated to run out \(estimate) at this pace (local time)."
+        }
         content.sound = .default
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "pace-warning", content: content, trigger: nil)) { error in
             if error == nil { UserDefaults.standard.set(now, forKey: key) }
@@ -174,6 +184,10 @@ struct UsagePanel: View {
     var pace: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(store.headline, systemImage: statusSymbol).font(.headline).foregroundStyle(tint)
+            if let estimate = store.estimatedRunOut {
+                Text("Estimated to run out \(estimate) at this pace.")
+                    .font(.callout).fixedSize(horizontal: false, vertical: true)
+            }
             if let error = store.error { Text(error).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             forecastRows
         }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))

@@ -41,6 +41,14 @@ struct Forecast {
     let recent: Double?
     var worst: Double? { [cycle, recent].compactMap { $0 }.max() }
     var level: Int { guard let worst else { return 0 }; return worst >= 100 ? 2 : worst >= 90 ? 1 : 0 }
+    func runOutAt(for window: Window, now: Double) -> Double? {
+        guard window.resetsAt > now, window.remaining > 0,
+              let worst, worst.isFinite, worst >= 100, worst > window.usedPercent else { return nil }
+        // Both projections start from current usage, so the higher forecast
+        // also gives the earliest exhaustion time at a constant pace.
+        let rate = (worst - window.usedPercent) / (window.resetsAt - now)
+        return now + window.remaining / rate
+    }
     static func calculate(_ window: Window, samples: [Sample], now: Double) -> Forecast {
         // Account for backend reset timestamps occasionally differing by one second.
         let candidates = samples.filter { abs($0.reset - window.resetsAt) <= 2 && $0.date >= now - 86400 && $0.date <= now - 21600 && $0.used <= window.usedPercent }.sorted { $0.date < $1.date }
@@ -131,15 +139,27 @@ func runTests() {
     assert(Forecast.calculate(w, samples: [], now: now).level == 0)
     let fast = Window(usedPercent: 45, windowDurationMins: 10080, resetsAt: now + 5 * 86400)
     assert(Forecast.calculate(fast, samples: [], now: now).level == 2)
+    let fastForecast = Forecast.calculate(fast, samples: [], now: now)
+    assert(abs(fastForecast.runOutAt(for: fast, now: now)! - (now + 55 / 22.5 * 86400)) < 0.001)
+    assert(Forecast.calculate(w, samples: [], now: now).runOutAt(for: w, now: now) == nil)
     let recent = Forecast.calculate(w, samples: [Sample(date: now - 21600, used: 0, reset: w.resetsAt)], now: now)
     assert(recent.level == 2 && recent.recent! > 300)
+    assert(abs(recent.runOutAt(for: w, now: now)! - (now + 85 / 15 * 21600)) < 0.001)
+    let slowerRecent = Forecast.calculate(fast, samples: [Sample(date: now - 21600, used: 42, reset: fast.resetsAt)], now: now)
+    assert(slowerRecent.runOutAt(for: fast, now: now) == fastForecast.runOutAt(for: fast, now: now))
+    let atLimit = Window(usedPercent: 50, windowDurationMins: 10080, resetsAt: now + 3.5 * 86400)
+    assert(Forecast.calculate(atLimit, samples: [], now: now).runOutAt(for: atLimit, now: now) == atLimit.resetsAt)
+    let exhausted = Window(usedPercent: 100, windowDurationMins: 10080, resetsAt: fast.resetsAt)
+    assert(Forecast.calculate(exhausted, samples: [], now: now).runOutAt(for: exhausted, now: now) == nil)
+    assert(fastForecast.runOutAt(for: fast, now: fast.resetsAt) == nil)
     assert(Forecast.calculate(w, samples: [Sample(date: now - 21600, used: 0, reset: w.resetsAt - 604800)], now: now).recent == nil)
     assert(Forecast.calculate(w, samples: [Sample(date: now - 21600, used: 50, reset: w.resetsAt)], now: now).recent == nil)
     let new = Window(usedPercent: 1, windowDurationMins: 10080, resetsAt: now + 604799)
     assert(new.projection(at: now) == nil)
+    assert(Forecast.calculate(new, samples: [], now: now).runOutAt(for: new, now: now) == nil)
     assert(w.projection(at: w.resetsAt) == nil)
     let json = Data(#"{"rateLimits":{"primary":{"usedPercent":12,"windowDurationMins":300,"resetsAt":1000001},"secondary":{"usedPercent":15,"windowDurationMins":10080,"resetsAt":1499322}}}"#.utf8)
     let decoded = try! JSONDecoder().decode(Limits.self, from: json)
     assert(decoded.weekly?.usedPercent == 15 && decoded.windows.count == 2)
-    print("PASS: cycle forecast, daily budget, pace warning, recent trend, reset isolation, decreasing readings, new/expired windows, weekly-window decoding")
+    print("PASS: cycle forecast, daily budget, pace warning, run-out estimates, recent trend, reset isolation, decreasing readings, new/expired windows, weekly-window decoding")
 }
