@@ -4,7 +4,7 @@
 
 UsageBar is a small, native macOS app that shows your remaining Codex allowance, when it resets, and whether your current pace puts you at risk of running out.
 
-**[Download for Mac — Apple Silicon](https://github.com/shoobah/UsageBar/releases/download/v1.0.0/UsageBar-1.0.0-AppleSilicon.dmg)** · [Latest release](https://github.com/shoobah/UsageBar/releases/latest) · [Report an issue](https://github.com/shoobah/UsageBar/issues)
+**[Download for Mac — Apple Silicon](https://github.com/shoobah/UsageBar/releases/download/v1.1.0/UsageBar-1.1.0-AppleSilicon.dmg)** · [Latest release](https://github.com/shoobah/UsageBar/releases/latest) · [Report an issue](https://github.com/shoobah/UsageBar/issues)
 
 <p align="center">
   <img src="docs/images/usagebar.png" alt="UsageBar in the macOS menu bar, showing 84% remaining and an on-track weekly usage forecast." width="453">
@@ -15,6 +15,7 @@ UsageBar is a small, native macOS app that shows your remaining Codex allowance,
 - **Always visible.** See the percentage of your weekly allowance remaining right in the menu bar.
 - **Live updates.** Refreshes every minute, after your Mac wakes, or whenever you click Refresh.
 - **A useful forecast.** See projected usage at reset and how much of your weekly allowance you can spend per day. When your pace is too high, see the estimated date and local time you would run out.
+- **Optional activity explanation.** Ask Codex for a short summary of likely local usage contributors based on recent task descriptions, token totals, model, and reasoning effort.
 - **Warnings you can spot.** The menu bar icon turns amber when your projected usage approaches the limit and red when your pace is too high.
 - **Optional notifications.** Get a macOS notification when you risk running out, with a six-hour cooldown to avoid repeated alerts.
 - **Made for the Mac.** Native SwiftUI and AppKit, a compact scrolling popover, automatic icon contrast when you're on track, and optional launch at login.
@@ -31,7 +32,7 @@ UsageBar looks for the CLI at `/opt/homebrew/bin/codex`, `/usr/local/bin/codex`,
 
 ### Install
 
-1. [Download the DMG](https://github.com/shoobah/UsageBar/releases/download/v1.0.0/UsageBar-1.0.0-AppleSilicon.dmg).
+1. [Download the DMG](https://github.com/shoobah/UsageBar/releases/download/v1.1.0/UsageBar-1.1.0-AppleSilicon.dmg).
 2. Open it and drag **UsageBar** into **Applications**.
 3. Eject the disk image and open UsageBar from Applications.
 4. Click the percentage in your menu bar to see your usage and forecast.
@@ -52,7 +53,7 @@ The percentage in the menu bar is your weekly allowance **remaining**, not the a
 | Red warning | At least one forecast projects **100% or more**, or the allowance is exhausted. |
 | Question mark | A fresh reading isn't available. Open the popover for details. |
 
-The popover shows your reset time in your Mac's local time zone. If Codex reports another allowance window, that appears separately.
+The popover shows your reset time in your Mac's local time zone. If Codex reports another allowance window, that appears separately with its window length and reset time.
 
 ### How the forecast works
 
@@ -64,13 +65,16 @@ When your pace is too high, the panel and pace notifications show an **estimated
 
 **Available per day** divides your remaining allowance by the time until reset. A value of 14.7% means 14.7 percentage points of the **total weekly allowance** per day.
 
+**Remaining today (estimated)** fixes a daily budget using the first usage reading of your local calendar day, then subtracts the weekly allowance used since that reading. It is expressed as a percentage of the total weekly limit and cannot exceed the remaining weekly allowance or fall below zero. The tracking start time appears below it: if UsageBar starts partway through the day, earlier usage is not included in today's spending. The estimate starts over each local day or when the weekly allowance resets, and is unavailable while readings are stale. This is a pacing estimate, not a separate Codex daily limit.
+
 These are estimates, not guarantees. A busy workday, a quiet weekend, a different model, or usage on another device can change the outcome. UsageBar measures **Codex allowance**, not every separate ChatGPT model limit.
 
 ## Privacy
 
 - The download contains **no credentials, account details, or usage history**.
 - UsageBar uses your existing Codex sign-in through the CLI; it does not read or copy access tokens directly.
-- It requests account usage metadata. It does not start AI conversations, generate responses, or redeem credits.
+- Normal refreshes request only account usage metadata; they do not start AI conversations, generate responses, or redeem credits.
+- Clicking **Analyze recent activity** sends up to eight short local task descriptions with their token totals, model, and reasoning effort to an ephemeral, low-reasoning Codex run. It does not send full transcripts or tool output. The analysis consumes additional allowance and is never started automatically.
 - UsageBar adds no analytics or telemetry.
 - Timestamped usage percentages and reset times stay on your Mac in `~/Library/Application Support/UsageBar/history.json`.
 - History is limited to the current reset window and the last two days. A decrease in reported usage clears recent history. Preferences are stored in macOS UserDefaults.

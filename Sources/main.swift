@@ -8,6 +8,10 @@ final class UsageStore: ObservableObject {
     @Published var updated: Date?
     @Published var error: String?
     @Published var refreshing = false
+    @Published var showingUsageInfo = false
+    @Published var explainingUsage = false
+    @Published var usageExplanation: String?
+    @Published var usageExplanationError: String?
     @Published var notifications = UserDefaults.standard.bool(forKey: "notifications")
     @Published var loginEnabled = SMAppService.mainApp.status == .enabled
     var samples: [Sample] = []
@@ -122,6 +126,23 @@ final class UsageStore: ObservableObject {
             alert.runModal()
         }
     }
+    func explainUsage() {
+        guard !explainingUsage else { return }
+        explainingUsage = true
+        usageExplanation = nil
+        usageExplanationError = nil
+        let since = weekly?.start ?? Date().addingTimeInterval(-86400).timeIntervalSince1970
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try UsageExplanationClient.generate(since: since) }
+            DispatchQueue.main.async {
+                self.explainingUsage = false
+                switch result {
+                case .success(let explanation): self.usageExplanation = explanation
+                case .failure(let error): self.usageExplanationError = error.localizedDescription
+                }
+            }
+        }
+    }
 }
 
 struct UsagePanel: View {
@@ -134,6 +155,7 @@ struct UsagePanel: View {
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 14) {
                     allowance
+                    dailyRemaining
                     pace
                     resetInfo
                     otherWindows
@@ -169,9 +191,65 @@ struct UsagePanel: View {
                 ProgressView(value: min(100, max(0, w.usedPercent)), total: 100).tint(tint)
                 HStack {
                     Text("\(Int(w.usedPercent))% used this week")
+                    Button { store.showingUsageInfo.toggle() } label: {
+                        Image(systemName: "info.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("What affects usage?")
+                    .help("What affects usage?")
+                    .popover(isPresented: Binding(get: { store.showingUsageInfo }, set: { store.showingUsageInfo = $0 }), arrowEdge: .bottom) {
+                        usageInfo
+                    }
                     Spacer()
                     Text("100% limit")
                 }.font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+    var usageInfo: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("What affects usage?", systemImage: "info.circle.fill")
+                .font(.headline)
+            Text("Usage varies with task complexity, model, reasoning effort, and how long a task runs.")
+            Text("Codex reports the total allowance used, but does not identify which individual task caused it.")
+                .foregroundStyle(.secondary)
+            Divider()
+            if store.explainingUsage {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Analyzing recent local activity…")
+                }
+            } else if let explanation = store.usageExplanation {
+                Text("Likely local contributors").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text(explanation)
+                    .textSelection(.enabled)
+                Button("Analyze again") { store.explainUsage() }
+            } else {
+                if let error = store.usageExplanationError {
+                    Text(error).foregroundStyle(.red)
+                }
+                Button("Analyze recent activity") { store.explainUsage() }
+            }
+            Text("On demand only. Sends short task descriptions and token totals to an ephemeral, low-reasoning Codex run. The analysis itself uses additional allowance.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .font(.callout)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(14)
+        .frame(width: 330, alignment: .leading)
+    }
+    @ViewBuilder var dailyRemaining: some View {
+        if let window = store.weekly {
+            VStack(alignment: .leading, spacing: 6) {
+                if !store.stale, let estimate = DailyEstimate.calculate(window, samples: store.samples, now: Date().timeIntervalSince1970) {
+                    row("Remaining today (estimated)", String(format: "%.1f%%", estimate.remaining))
+                    Text("Of weekly limit · Usage tracked since \(Date(timeIntervalSince1970: estimate.observedSince).formatted(date: .omitted, time: .shortened))")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    row("Remaining today (estimated)", "—")
+                    Text("Waiting for a fresh usage reading.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -212,7 +290,11 @@ struct UsagePanel: View {
     var otherWindows: some View {
         let windows = store.limits?.windows.filter { $0.windowDurationMins != 10080 } ?? []
         return ForEach(Array(windows.enumerated()), id: \.offset) { _, w in
-            row("\(w.windowDurationMins / 60)-hour allowance", "\(Int(w.remaining))% remaining")
+            VStack(alignment: .leading, spacing: 6) {
+                row("\(w.windowDurationMins / 60)-hour allowance", "\(Int(w.remaining))% remaining")
+                Text("\(w.windowDurationMins / 60)-hour allowance · Resets \(Date(timeIntervalSince1970: w.resetsAt).formatted(date: .omitted, time: .shortened))")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
     var settings: some View {
