@@ -4,6 +4,8 @@ struct Window: Codable {
     let usedPercent: Double
     let windowDurationMins: Int
     let resetsAt: Double
+    /// Distinguishes extra allowances that share a window length, such as a model-specific weekly limit.
+    var label: String? = nil
     var remaining: Double { max(0, 100 - usedPercent) }
     var duration: Double { Double(windowDurationMins) * 60 }
     var start: Double { resetsAt - duration }
@@ -21,15 +23,29 @@ struct Bucket: Decodable {
     let primary: Window?
     let secondary: Window?
 }
+/// Provider-neutral allowance reading.
+struct Usage {
+    let windows: [Window]
+    let accountId: String?
+    var weekly: Window? { windows.first { $0.windowDurationMins == 10080 && $0.label == nil } }
+}
 struct Limits: Decodable {
     let rateLimits: Bucket?
     let rateLimitsByLimitId: [String: Bucket]?
     let accountId: String?
-    var windows: [Window] {
+    var usage: Usage {
         let bucket = rateLimitsByLimitId?["codex"] ?? rateLimits
-        return [bucket?.primary, bucket?.secondary].compactMap { $0 }
+        return Usage(windows: [bucket?.primary, bucket?.secondary].compactMap { $0 }, accountId: accountId)
     }
-    var weekly: Window? { windows.first { $0.windowDurationMins == 10080 } }
+}
+enum Provider: String, CaseIterable, Identifiable {
+    case codex, claude
+    var id: String { rawValue }
+    var name: String { self == .codex ? "Codex" : "Claude" }
+    /// Claude's usage endpoint is rate limited, so it is polled less often.
+    var refreshInterval: Double { self == .codex ? 60 : 300 }
+    var isAvailable: Bool { self == .codex ? (try? UsageClient.executableURL()) != nil : ClaudeUsageClient.hasCredentials }
+    func fetch() throws -> Usage { self == .codex ? try UsageClient.fetch().usage : try ClaudeUsageClient.fetch() }
 }
 struct Sample: Codable {
     let date: Double
@@ -88,7 +104,7 @@ enum UsageError: LocalizedError {
 
 /// Reads only account metadata. Never starts a model turn or accesses auth tokens directly.
 final class UsageClient {
-    static let version = "1.1.0"
+    static let version = "1.2.0"
 
     static func executableURL() throws -> URL {
         let fm = FileManager.default
@@ -154,6 +170,99 @@ final class UsageClient {
                 }
             }
         }
+    }
+}
+
+/// Reads Claude plan usage with the Claude Code sign-in. Only requests usage
+/// metadata; never starts a model turn or refreshes the sign-in.
+final class ClaudeUsageClient {
+    static let keychainService = "Claude Code-credentials"
+    private static var credentialsFile: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/.credentials.json") }
+
+    struct Response: Decodable {
+        struct Limit: Decodable {
+            let utilization: Double?
+            let resetsAt: String?
+            enum CodingKeys: String, CodingKey { case utilization, resetsAt = "resets_at" }
+        }
+        let fiveHour: Limit?
+        let sevenDay: Limit?
+        let sevenDayOpus: Limit?
+        let sevenDaySonnet: Limit?
+        enum CodingKeys: String, CodingKey {
+            case fiveHour = "five_hour", sevenDay = "seven_day", sevenDayOpus = "seven_day_opus", sevenDaySonnet = "seven_day_sonnet"
+        }
+        var usage: Usage {
+            func window(_ limit: Limit?, _ mins: Int, _ label: String?) -> Window? {
+                guard let used = limit?.utilization, let reset = limit?.resetsAt.flatMap(ClaudeUsageClient.parseDate) else { return nil }
+                return Window(usedPercent: used, windowDurationMins: mins, resetsAt: reset, label: label)
+            }
+            return Usage(windows: [window(sevenDay, 10080, nil), window(fiveHour, 300, nil),
+                                   window(sevenDayOpus, 10080, "Weekly Opus"), window(sevenDaySonnet, 10080, "Weekly Sonnet")].compactMap { $0 },
+                         accountId: nil)
+        }
+    }
+    private struct Credentials: Decodable {
+        struct OAuth: Decodable { let accessToken: String; let expiresAt: Double? }
+        let claudeAiOauth: OAuth?
+    }
+
+    /// Checks for a stored sign-in without reading the secret.
+    static var hasCredentials: Bool {
+        FileManager.default.fileExists(atPath: credentialsFile.path) || (try? security(["find-generic-password", "-s", keychainService])) != nil
+    }
+
+    /// Whole seconds only: reset timestamps carry varying sub-second parts between readings.
+    static func parseDate(_ string: String) -> Double? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let whole = string.replacingOccurrences(of: #"\.\d+"#, with: "", options: .regularExpression)
+        return formatter.date(from: whole)?.timeIntervalSince1970
+    }
+
+    static func fetch() throws -> Usage {
+        let signInMessage = "Claude sign-in was not found or has expired. Open Claude Code, sign in with your Claude subscription, then refresh."
+        // The Claude Code keychain item already trusts /usr/bin/security, so reading it
+        // this way avoids a separate keychain prompt for UsageBar.
+        guard let data = (try? security(["find-generic-password", "-s", keychainService, "-w"])) ?? (try? Data(contentsOf: credentialsFile)),
+              let oauth = (try? JSONDecoder().decode(Credentials.self, from: data))?.claudeAiOauth else {
+            throw UsageError.message(signInMessage)
+        }
+        if let expiresAt = oauth.expiresAt, expiresAt / 1000 < Date().timeIntervalSince1970 { throw UsageError.message(signInMessage) }
+
+        var request = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!, timeoutInterval: 20)
+        request.setValue("Bearer \(oauth.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        request.setValue("usage_bar/\(UsageClient.version)", forHTTPHeaderField: "User-Agent")
+        let done = DispatchSemaphore(value: 0)
+        var result: (Data?, URLResponse?, Error?)
+        URLSession.shared.dataTask(with: request) { result = ($0, $1, $2); done.signal() }.resume()
+        done.wait()
+        guard let body = result.0, let status = (result.1 as? HTTPURLResponse)?.statusCode else {
+            throw UsageError.message("Usage refresh failed. Check your internet connection and try again.")
+        }
+        switch status {
+        case 200: return try JSONDecoder().decode(Response.self, from: body).usage
+        case 401, 403: throw UsageError.message(signInMessage)
+        case 429: throw UsageError.message("Claude is limiting usage requests. UsageBar will retry automatically.")
+        default: throw UsageError.message("Claude could not read usage (HTTP \(status)).")
+        }
+    }
+
+    private static func security(_ arguments: [String]) throws -> Data {
+        let process = Process(), output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = arguments
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let timeout = DispatchWorkItem { if process.isRunning { process.terminate() } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 30, execute: timeout)
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        timeout.cancel()
+        guard process.terminationStatus == 0 else { throw UsageError.message("Keychain item not found.") }
+        return data
     }
 }
 
@@ -369,8 +478,15 @@ func runTests() {
     assert(Forecast.calculate(new, samples: [], now: now).runOutAt(for: new, now: now) == nil)
     assert(w.projection(at: w.resetsAt) == nil)
     let json = Data(#"{"rateLimits":{"primary":{"usedPercent":12,"windowDurationMins":300,"resetsAt":1000001},"secondary":{"usedPercent":15,"windowDurationMins":10080,"resetsAt":1499322}}}"#.utf8)
-    let decoded = try! JSONDecoder().decode(Limits.self, from: json)
+    let decoded = try! JSONDecoder().decode(Limits.self, from: json).usage
     assert(decoded.weekly?.usedPercent == 15 && decoded.windows.count == 2)
+    let claudeJSON = Data(#"{"five_hour":{"utilization":6.0,"resets_at":"2025-11-04T04:59:59.943648+00:00"},"seven_day":{"utilization":35.0,"resets_at":"2025-11-06T03:59:59.12+00:00"},"seven_day_opus":null,"seven_day_sonnet":{"utilization":2.0,"resets_at":null},"extra_usage":{"is_enabled":false}}"#.utf8)
+    let claude = try! JSONDecoder().decode(ClaudeUsageClient.Response.self, from: claudeJSON).usage
+    assert(claude.weekly?.usedPercent == 35 && claude.windows.count == 2)
+    assert(claude.weekly?.resetsAt == ClaudeUsageClient.parseDate("2025-11-06T03:59:59Z"))
+    let claudeModelWeekly = Data(#"{"seven_day":{"utilization":10,"resets_at":"2025-11-06T03:59:59Z"},"seven_day_opus":{"utilization":80,"resets_at":"2025-11-06T03:59:59Z"}}"#.utf8)
+    let modelWeekly = try! JSONDecoder().decode(ClaudeUsageClient.Response.self, from: claudeModelWeekly).usage
+    assert(modelWeekly.weekly?.usedPercent == 10 && modelWeekly.windows.last?.label == "Weekly Opus")
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(secondsFromGMT: 0)!
     let day = calendar.startOfDay(for: Date(timeIntervalSince1970: now)).timeIntervalSince1970
@@ -390,5 +506,5 @@ func runTests() {
     let lastDay = Window(usedPercent: 95, windowDurationMins: 10080, resetsAt: now + 3600)
     assert(DailyEstimate.calculate(lastDay, samples: [Sample(date: now, used: 95, reset: lastDay.resetsAt)], now: now, calendar: calendar)!.remaining == 5)
     print("PASS: daily estimate spending, midnight rollover, expired/reset windows, decreasing readings, overspending, partial-day tracking, final-day cap")
-    print("PASS: cycle forecast, daily budget, pace warning, run-out estimates, recent trend, reset isolation, decreasing readings, new/expired windows, weekly-window decoding")
+    print("PASS: cycle forecast, daily budget, pace warning, run-out estimates, recent trend, reset isolation, decreasing readings, new/expired windows, Codex and Claude weekly-window decoding")
 }
