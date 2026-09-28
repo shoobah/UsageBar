@@ -65,7 +65,7 @@ The popover shows your reset time in your Mac's local time zone. If the provider
 
 When your pace is too high, the panel and pace notifications show an **estimated run-out time**, using whichever pace would exhaust the allowance first. This assumes that pace continues. The estimate is hidden when readings are stale, the window has expired, or the allowance is already exhausted.
 
-**Available per day** divides your remaining allowance by the time until reset. A value of 14.7% means 14.7 percentage points of the **total weekly allowance** per day.
+**Available per day** divides your remaining allowance by the time until reset. A value of 14.7% means 14.7 percentage points of the **total weekly allowance** per day. Within the final day before reset, it is capped at the remaining allowance.
 
 **Remaining today (estimated)** fixes a daily budget using the first usage reading of your local calendar day, then subtracts the weekly allowance used since that reading. It is expressed as a percentage of the total weekly limit and cannot exceed the remaining weekly allowance or fall below zero. The tracking start time appears below it: if UsageBar starts partway through the day, earlier usage is not included in today's spending. The estimate starts over each local day or when the weekly allowance resets, and is unavailable while readings are stale. This is a pacing estimate, not a separate daily limit.
 

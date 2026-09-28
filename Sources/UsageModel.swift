@@ -16,7 +16,8 @@ struct Window: Codable {
     }
     func dailyBudget(at now: Double) -> Double? {
         guard resetsAt > now else { return nil }
-        return remaining / ((resetsAt - now) / 86400)
+        // Within the final day, more than the remaining allowance can't be spent.
+        return min(remaining, remaining / ((resetsAt - now) / 86400))
     }
 }
 struct Bucket: Decodable {
@@ -455,6 +456,7 @@ func runTests() {
     let w = Window(usedPercent: 15, windowDurationMins: 10080, resetsAt: now + 5.7792 * 86400)
     assert(abs(w.projection(at: now)! - 86.01) < 0.1)
     assert(abs(w.dailyBudget(at: now)! - 14.708) < 0.01)
+    assert(Window(usedPercent: 13, windowDurationMins: 10080, resetsAt: now + 13.75 * 3600).dailyBudget(at: now) == 87)
     assert(Forecast.calculate(w, samples: [], now: now).level == 0)
     let fast = Window(usedPercent: 45, windowDurationMins: 10080, resetsAt: now + 5 * 86400)
     assert(Forecast.calculate(fast, samples: [], now: now).level == 2)
