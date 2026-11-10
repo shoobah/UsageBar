@@ -71,9 +71,8 @@ final class UsageStore: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         historyURL = dir.appendingPathComponent(provider == .codex ? "history.json" : "history-\(provider.rawValue).json")
     }
-    /// The limit the panel tracks: the weekly limit with the least allowance left.
-    var weekly: Window? { usage?.tightestWeekly }
-    var limitName: String { weekly?.label.map { "\($0) limit" } ?? "weekly limit" }
+    /// The limit the panel and menu bar track: the overall weekly limit. Model-scoped limits show below it.
+    var weekly: Window? { usage?.weekly }
     var stale: Bool { error != nil || updated.map { Date().timeIntervalSince($0) > provider.refreshInterval * 3 } ?? true }
     var forecast: Forecast? {
         weekly.map { Forecast.calculate($0, samples: samples, now: Date().timeIntervalSince1970) }
@@ -119,7 +118,7 @@ final class UsageStore: ObservableObject {
                     self.usage = usage
                     self.updated = Date()
                     self.error = nil
-                    if let w = usage.tightestWeekly {
+                    if let w = usage.weekly {
                         let now = Date().timeIntervalSince1970
                         self.samples = self.samples.filter { $0.label == w.label && abs($0.reset - w.resetsAt) <= 2 && $0.date > now - 86400 * 2 }
                         if let last = self.samples.last, w.usedPercent < last.used { self.samples = [] }
@@ -142,9 +141,9 @@ final class UsageStore: ObservableObject {
         guard now - UserDefaults.standard.double(forKey: key) >= 21600 else { return }
         let content = UNMutableNotificationContent()
         content.title = "Your \(provider.name) usage pace is too high"
-        content.body = "\(Int(w.remaining))% of \(limitName) remaining. At this pace, you may run out before your weekly reset."
+        content.body = "\(Int(w.remaining))% remaining. At this pace, you may run out before your weekly reset."
         if let estimate = estimatedRunOut {
-            content.body = "\(Int(w.remaining))% of \(limitName) remaining. Estimated to run out \(estimate) at this pace (local time)."
+            content.body = "\(Int(w.remaining))% remaining. Estimated to run out \(estimate) at this pace (local time)."
         }
         content.sound = .default
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "pace-warning-\(provider.rawValue)", content: content, trigger: nil)) { error in
@@ -228,7 +227,7 @@ struct UsagePanel: View {
                 }
                 ProgressView(value: min(100, max(0, w.usedPercent)), total: 100).tint(tint)
                 HStack {
-                    Text("\(Int(w.usedPercent))% used this week" + (w.label.map { " · \($0)" } ?? ""))
+                    Text("\(Int(w.usedPercent))% used this week")
                     Button { store.showingUsageInfo.toggle() } label: {
                         Image(systemName: "info.circle")
                     }
@@ -284,7 +283,7 @@ struct UsagePanel: View {
             VStack(alignment: .leading, spacing: 6) {
                 if !store.stale, let estimate = DailyEstimate.calculate(window, samples: store.samples, now: Date().timeIntervalSince1970) {
                     row("Remaining today (estimated)", String(format: "%.1f%%", estimate.remaining))
-                    Text("Of \(store.limitName) · Usage tracked since \(Date(timeIntervalSince1970: estimate.observedSince).formatted(date: .omitted, time: .shortened))")
+                    Text("Of weekly limit · Usage tracked since \(Date(timeIntervalSince1970: estimate.observedSince).formatted(date: .omitted, time: .shortened))")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     row("Remaining today (estimated)", "—")
@@ -316,7 +315,7 @@ struct UsagePanel: View {
             row("Projected use at reset", "\(Int(cycle.rounded()))%")
             if let recent = f.recent { row("At your recent pace", "\(Int(recent.rounded()))%") }
             if let budget = store.weekly?.dailyBudget(at: Date().timeIntervalSince1970) {
-                row("Available per day", String(format: "%.1f%% of \(store.limitName)", budget))
+                row("Available per day", String(format: "%.1f%% of weekly limit", budget))
             }
         }
     }
@@ -328,17 +327,23 @@ struct UsagePanel: View {
             }
         }
     }
-    var otherWindows: some View {
-        let primary = store.weekly
-        let windows = store.usage?.windows.filter { $0.label != primary?.label || $0.windowDurationMins != primary?.windowDurationMins } ?? []
-        return ForEach(Array(windows.enumerated()), id: \.offset) { _, w in
-            let name = (w.label ?? (w.windowDurationMins == 10080 ? "Weekly (all models)" : "\(w.windowDurationMins / 60)-hour")) + " allowance"
-            let reset = Date(timeIntervalSince1970: w.resetsAt)
-            VStack(alignment: .leading, spacing: 6) {
-                row(name, "\(Int(w.remaining))% remaining")
-                Text("\(name) · Resets \(w.windowDurationMins > 1440 ? reset.formatted(.dateTime.weekday(.abbreviated).hour().minute()) : reset.formatted(date: .omitted, time: .shortened))")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+    /// Session limits first, then model-scoped limits (such as Fable) below a divider.
+    @ViewBuilder var otherWindows: some View {
+        let windows = store.usage?.windows.filter { $0.label != nil || $0.windowDurationMins != 10080 } ?? []
+        let scoped = windows.filter { $0.label != nil }
+        ForEach(Array(windows.filter { $0.label == nil }.enumerated()), id: \.offset) { _, w in windowRow(w) }
+        if !scoped.isEmpty {
+            Divider()
+            ForEach(Array(scoped.enumerated()), id: \.offset) { _, w in windowRow(w) }
+        }
+    }
+    func windowRow(_ w: Window) -> some View {
+        let name = (w.label ?? "\(w.windowDurationMins / 60)-hour") + " allowance"
+        let reset = Date(timeIntervalSince1970: w.resetsAt)
+        return VStack(alignment: .leading, spacing: 6) {
+            row(name, "\(Int(w.remaining))% remaining")
+            Text("\(name) · Resets \(w.windowDurationMins > 1440 ? reset.formatted(.dateTime.weekday(.abbreviated).hour().minute()) : reset.formatted(date: .omitted, time: .shortened))")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
     var settings: some View {
@@ -404,7 +409,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         button.contentTintColor = nil
         button.title = store.weekly.map { " \(Int($0.remaining))%" + (store.stale || store.expired ? " ·" : "") } ?? " —"
         button.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        button.toolTip = "\(store.provider.name) \(store.weekly?.label ?? "weekly") allowance remaining · \(store.headline)"
+        button.toolTip = "\(store.provider.name) weekly allowance remaining · \(store.headline)"
     }
     @objc func toggle() {
         if popover.isShown { popover.performClose(nil) }
