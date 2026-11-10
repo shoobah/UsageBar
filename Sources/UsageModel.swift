@@ -29,6 +29,10 @@ struct Usage {
     let windows: [Window]
     let accountId: String?
     var weekly: Window? { windows.first { $0.windowDurationMins == 10080 && $0.label == nil } }
+    /// The weekly limit with the least allowance left, such as a model-scoped cap. Ties keep the overall limit.
+    var tightestWeekly: Window? {
+        windows.filter { $0.windowDurationMins == 10080 }.min { $0.remaining < $1.remaining || ($0.remaining == $1.remaining && $0.label == nil) }
+    }
 }
 struct Limits: Decodable {
     let rateLimits: Bucket?
@@ -527,6 +531,9 @@ func runTests() {
     let listed = try! JSONDecoder().decode(ClaudeUsageClient.Response.self, from: claudeListed).usage
     assert(listed.windows.count == 2 && listed.weekly?.usedPercent == 11)
     assert(listed.windows.last?.label == "Weekly Fable" && listed.windows.last?.usedPercent == 14)
+    assert(listed.tightestWeekly?.label == "Weekly Fable")
+    assert(decoded.tightestWeekly?.label == nil && decoded.tightestWeekly?.usedPercent == 15)
+    assert(modelWeekly.tightestWeekly?.label == "Weekly Opus")
     let claudeBadList = Data(#"{"seven_day":{"utilization":10,"resets_at":"2025-11-06T03:59:59Z"},"limits":"unexpected"}"#.utf8)
     assert(try! JSONDecoder().decode(ClaudeUsageClient.Response.self, from: claudeBadList).usage.weekly?.usedPercent == 10)
     var calendar = Calendar(identifier: .gregorian)

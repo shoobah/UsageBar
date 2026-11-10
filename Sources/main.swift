@@ -399,9 +399,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         button.imagePosition = .imageLeading
         button.contentTintColor = nil
-        button.title = store.weekly.map { " \(Int($0.remaining))%" + (store.stale || store.expired ? " ·" : "") } ?? " —"
+        let shown = store.weekly == nil ? nil : store.usage?.tightestWeekly
+        button.title = shown.map { " \(Int($0.remaining))%" + (store.stale || store.expired ? " ·" : "") } ?? " —"
         button.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        button.toolTip = "\(store.provider.name) weekly allowance remaining · \(store.headline)"
+        button.toolTip = "\(store.provider.name) \(shown?.label ?? "weekly") allowance remaining · \(store.headline)"
     }
     @objc func toggle() {
         if popover.isShown { popover.performClose(nil) }
