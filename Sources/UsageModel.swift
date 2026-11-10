@@ -56,6 +56,8 @@ struct Sample: Codable {
     let date: Double
     let used: Double
     let reset: Double
+    /// Matches `Window.label`, so readings of different limits are never mixed.
+    var label: String? = nil
 }
 struct DailyEstimate {
     let remaining: Double
