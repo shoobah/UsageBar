@@ -186,20 +186,54 @@ final class ClaudeUsageClient {
             let resetsAt: String?
             enum CodingKeys: String, CodingKey { case utilization, resetsAt = "resets_at" }
         }
+        /// Entry of the newer `limits` list, which also carries model-scoped weekly caps.
+        struct Entry: Decodable {
+            struct Scope: Decodable {
+                struct Model: Decodable { let displayName: String?; enum CodingKeys: String, CodingKey { case displayName = "display_name" } }
+                let model: Model?
+            }
+            let kind: String?
+            let group: String?
+            let percent: Double?
+            let resetsAt: String?
+            let scope: Scope?
+            enum CodingKeys: String, CodingKey { case kind, group, percent, scope, resetsAt = "resets_at" }
+        }
         let fiveHour: Limit?
         let sevenDay: Limit?
         let sevenDayOpus: Limit?
         let sevenDaySonnet: Limit?
+        let limits: [Entry]?
         enum CodingKeys: String, CodingKey {
-            case fiveHour = "five_hour", sevenDay = "seven_day", sevenDayOpus = "seven_day_opus", sevenDaySonnet = "seven_day_sonnet"
+            case fiveHour = "five_hour", sevenDay = "seven_day", sevenDayOpus = "seven_day_opus", sevenDaySonnet = "seven_day_sonnet", limits
+        }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            fiveHour = try c.decodeIfPresent(Limit.self, forKey: .fiveHour)
+            sevenDay = try c.decodeIfPresent(Limit.self, forKey: .sevenDay)
+            sevenDayOpus = try c.decodeIfPresent(Limit.self, forKey: .sevenDayOpus)
+            sevenDaySonnet = try c.decodeIfPresent(Limit.self, forKey: .sevenDaySonnet)
+            // The list format is still changing; an unexpected shape must not break the legacy fields.
+            limits = (try? c.decodeIfPresent([Entry].self, forKey: .limits)) ?? nil
         }
         var usage: Usage {
-            func window(_ limit: Limit?, _ mins: Int, _ label: String?) -> Window? {
-                guard let used = limit?.utilization, let reset = limit?.resetsAt.flatMap(ClaudeUsageClient.parseDate) else { return nil }
+            func window(_ used: Double?, _ resetsAt: String?, _ mins: Int, _ label: String?) -> Window? {
+                guard let used, let reset = resetsAt.flatMap(ClaudeUsageClient.parseDate) else { return nil }
                 return Window(usedPercent: used, windowDurationMins: mins, resetsAt: reset, label: label)
             }
-            return Usage(windows: [window(sevenDay, 10080, nil), window(fiveHour, 300, nil),
-                                   window(sevenDayOpus, 10080, "Weekly Opus"), window(sevenDaySonnet, 10080, "Weekly Sonnet")].compactMap { $0 },
+            let listed: [Window] = (limits ?? []).compactMap { entry in
+                guard entry.group == "weekly" else { return nil }
+                let label = entry.kind == "weekly_all" ? nil : "Weekly " + (entry.scope?.model?.displayName ?? "scoped")
+                return window(entry.percent, entry.resetsAt, 10080, label)
+            }
+            // Session limits are not in the list, so keep reading them from the legacy field.
+            let session = window(fiveHour?.utilization, fiveHour?.resetsAt, 300, nil)
+            if listed.contains(where: { $0.label == nil }) {
+                return Usage(windows: [listed.filter { $0.label == nil }, [session].compactMap { $0 }, listed.filter { $0.label != nil }].flatMap { $0 }, accountId: nil)
+            }
+            return Usage(windows: [window(sevenDay?.utilization, sevenDay?.resetsAt, 10080, nil), session,
+                                   window(sevenDayOpus?.utilization, sevenDayOpus?.resetsAt, 10080, "Weekly Opus"),
+                                   window(sevenDaySonnet?.utilization, sevenDaySonnet?.resetsAt, 10080, "Weekly Sonnet")].compactMap { $0 },
                          accountId: nil)
         }
     }
@@ -489,6 +523,12 @@ func runTests() {
     let claudeModelWeekly = Data(#"{"seven_day":{"utilization":10,"resets_at":"2025-11-06T03:59:59Z"},"seven_day_opus":{"utilization":80,"resets_at":"2025-11-06T03:59:59Z"}}"#.utf8)
     let modelWeekly = try! JSONDecoder().decode(ClaudeUsageClient.Response.self, from: claudeModelWeekly).usage
     assert(modelWeekly.weekly?.usedPercent == 10 && modelWeekly.windows.last?.label == "Weekly Opus")
+    let claudeListed = Data(#"{"five_hour":null,"seven_day":{"utilization":11.0,"resets_at":"2026-11-17T02:00:00.204987+00:00"},"seven_day_opus":null,"limits":[{"kind":"weekly_all","group":"weekly","percent":11,"resets_at":"2026-11-17T02:00:00.204987+00:00","scope":null,"is_active":false},{"kind":"weekly_scoped","group":"weekly","percent":14,"resets_at":"2026-11-17T02:00:00.205140+00:00","scope":{"model":{"id":null,"display_name":"Fable"},"surface":null},"is_active":true}]}"#.utf8)
+    let listed = try! JSONDecoder().decode(ClaudeUsageClient.Response.self, from: claudeListed).usage
+    assert(listed.windows.count == 2 && listed.weekly?.usedPercent == 11)
+    assert(listed.windows.last?.label == "Weekly Fable" && listed.windows.last?.usedPercent == 14)
+    let claudeBadList = Data(#"{"seven_day":{"utilization":10,"resets_at":"2025-11-06T03:59:59Z"},"limits":"unexpected"}"#.utf8)
+    assert(try! JSONDecoder().decode(ClaudeUsageClient.Response.self, from: claudeBadList).usage.weekly?.usedPercent == 10)
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(secondsFromGMT: 0)!
     let day = calendar.startOfDay(for: Date(timeIntervalSince1970: now)).timeIntervalSince1970
